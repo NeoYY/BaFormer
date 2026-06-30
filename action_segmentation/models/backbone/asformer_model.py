@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import optim
 
+import os
 import copy
 import numpy as np
 import math
@@ -13,6 +14,12 @@ from action_segmentation.utils.d2_compat import Registry
 from . import BACKBONE_REGISTRY
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Toggle the vectorized (unfold) sliding-window attention. Defaults on; set
+# BAFORMER_VEC_SLIDING=0 to fall back to the original per-window python loops
+# (used only for A/B benchmarking; the two paths are numerically identical, see
+# opt_tests/test_attlayer_equiv.py).
+_VECTORIZED_SLIDING = os.environ.get("BAFORMER_VEC_SLIDING", "1") == "1"
 
 @BACKBONE_REGISTRY.register()
 class ASFormerEncoder(nn.Module):
@@ -195,34 +202,42 @@ class AttLayer(nn.Module):
         # padding zeros for the last segment
         nb = L // self.bl
         if L % self.bl != 0:
-            q = torch.cat([q, torch.zeros((m_batchsize, c1, self.bl - L % self.bl)).to(device)], dim=-1)
-            k = torch.cat([k, torch.zeros((m_batchsize, c2, self.bl - L % self.bl)).to(device)], dim=-1)
-            v = torch.cat([v, torch.zeros((m_batchsize, c3, self.bl - L % self.bl)).to(device)], dim=-1)
+            pad = self.bl - L % self.bl
+            q = F.pad(q, (0, pad))
+            k = F.pad(k, (0, pad))
+            v = F.pad(v, (0, pad))
             nb += 1
-        padding_mask = torch.cat([torch.ones((m_batchsize, 1, L)).to(device) * mask[:, 0:1, :],
-                                  torch.zeros((m_batchsize, 1, self.bl * nb - L)).to(device)], dim=-1)
+        # frame-validity mask over the (possibly padded) length
+        padding_mask = F.pad(mask[:, 0:1, :], (0, self.bl * nb - L))
 
-        # sliding window approach, by splitting query_proj and key_proj into shape (c1, l) x (c1, 2l)
-        # sliding window for query_proj: reshape
+        # sliding window for query_proj: reshape (already loop-free)
         q = q.reshape(m_batchsize, c1, nb, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c1, self.bl)
 
-        # sliding window approach for key_proj
-        # 1. add paddings at the start and end
-        k = torch.cat([torch.zeros(m_batchsize, c2, self.bl // 2).to(device), k,
-                       torch.zeros(m_batchsize, c2, self.bl // 2).to(device)], dim=-1)
-        v = torch.cat([torch.zeros(m_batchsize, c3, self.bl // 2).to(device), v,
-                       torch.zeros(m_batchsize, c3, self.bl // 2).to(device)], dim=-1)
-        padding_mask = torch.cat([torch.zeros(m_batchsize, 1, self.bl // 2).to(device), padding_mask,
-                                  torch.zeros(m_batchsize, 1, self.bl // 2).to(device)], dim=-1)
+        if _VECTORIZED_SLIDING:
+            # Vectorized sliding windows via unfold. Replaces the python per-window
+            # loops below, which launched O(nb) tiny slice/cat kernels per layer
+            # (nb up to L when bl=1) -> the kernel-launch bottleneck on long seqs.
+            # Bit-identical to the original (opt_tests/test_attlayer_equiv.py).
+            w = self.bl + 2 * (self.bl // 2)
+            p = self.bl // 2
+            k = F.pad(k, (p, p)).unfold(2, w, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c2, w)
+            v = F.pad(v, (p, p)).unfold(2, w, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, c3, w)
+            padding_mask = F.pad(padding_mask, (p, p)).unfold(2, w, self.bl).permute(0, 2, 1, 3).reshape(m_batchsize * nb, 1, w)
+        else:
+            # original per-window python loops (kept for A/B benchmarking only)
+            k = torch.cat([torch.zeros(m_batchsize, c2, self.bl // 2).to(device), k,
+                           torch.zeros(m_batchsize, c2, self.bl // 2).to(device)], dim=-1)
+            v = torch.cat([torch.zeros(m_batchsize, c3, self.bl // 2).to(device), v,
+                           torch.zeros(m_batchsize, c3, self.bl // 2).to(device)], dim=-1)
+            padding_mask = torch.cat([torch.zeros(m_batchsize, 1, self.bl // 2).to(device), padding_mask,
+                                      torch.zeros(m_batchsize, 1, self.bl // 2).to(device)], dim=-1)
+            k = torch.cat([k[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)],
+                          dim=0)  # special case when self.bl = 1
+            v = torch.cat([v[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)], dim=0)
+            padding_mask = torch.cat(
+                [padding_mask[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)],
+                dim=0)  # of shape (m*nb, 1, 2l)
 
-        # 2. reshape key_proj of shape (m_batchsize*nb, c1, 2*self.bl)
-        k = torch.cat([k[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)],
-                      dim=0)  # special case when self.bl = 1
-        v = torch.cat([v[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)], dim=0)
-        # 3. construct window mask of shape (1, l, 2l), and use it to generate final mask
-        padding_mask = torch.cat(
-            [padding_mask[:, :, i * self.bl:(i + 1) * self.bl + (self.bl // 2) * 2] for i in range(nb)],
-            dim=0)  # of shape (m*nb, 1, 2l)
         final_mask = self.window_mask.repeat(m_batchsize * nb, 1, 1) * padding_mask
 
         output, attention = self.att_helper.scalar_dot_att(q, k, v, final_mask)

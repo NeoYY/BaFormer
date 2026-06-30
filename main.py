@@ -628,21 +628,36 @@ def main():
     for epoch, seed in enumerate(epoch_seeds[start_epoch:], start_epoch):
         epoch +=1
         # np.random.seed(seed)
+        _t_train = time.perf_counter()
         train(epoch, config, model, optimizer, scheduler, train_loader, logger, tensorboard_writer, tensorboard_writer2)
+        _t_train = time.perf_counter() - _t_train
+        logger.info(f'[TIMING] train epoch {epoch}: {_t_train:.1f}s  ({_t_train/max(1,len(train_loader))*1000:.1f} ms/vid over {len(train_loader)} vids)')
 
         if config.train.val_period > 0 and (epoch % config.train.val_period == 0):
+            _t_val = time.perf_counter()
             if_update = validate(epoch, config, model, val_loader, val_record, logger, tensorboard_writer)
+            _t_val = time.perf_counter() - _t_val
+            logger.info(f'[TIMING] val epoch {epoch}: {_t_val:.1f}s  ({_t_val/max(1,len(val_loader))*1000:.1f} ms/vid over {len(val_loader)} vids)')
+        else:
+            if_update = False
 
         tensorboard_writer.flush()
         tensorboard_writer2.flush()
 
+        checkpoint_config = {
+            'epoch': epoch,
+            'global_step': global_step,
+            'config': config.as_dict(),
+        }
         if if_update:
-            checkpoint_config = {
-                'epoch': epoch,
-                'global_step': global_step,
-                'config': config.as_dict(),
-            }
-            checkpointer.save(f'checkpoint_best', **checkpoint_config)# save current epoch
+            checkpointer.save(f'checkpoint_best', **checkpoint_config)# save best-val model
+        # --- crash-safe checkpointing for long/detached runs ---
+        # always refresh 'checkpoint_latest' so resume continues from the most
+        # recent epoch (fvcore writes last_checkpoint -> this file); saved LAST so
+        # resume picks latest, not best.
+        if epoch % max(1, config.train.checkpoint_period) == 0:
+            checkpointer.save(f'checkpoint_epoch_{epoch}', **checkpoint_config)
+        checkpointer.save('checkpoint_latest', **checkpoint_config)
     tensorboard_writer.close()
     tensorboard_writer2.close()
 
