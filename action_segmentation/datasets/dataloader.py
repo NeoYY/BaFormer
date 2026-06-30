@@ -7,7 +7,7 @@ import yacs.config
 
 from torch.utils.data import DataLoader
 
-from action_segmentation import create_collator
+from action_segmentation.collators import create_collator
 from action_segmentation.datasets import create_dataset, create_dataset_all
 
 
@@ -124,4 +124,3 @@ def create_dataloader(
 #             drop_last=False,
 #             pin_memory=config.test.dataloader.pin_memory)
 #         return test_loader
-

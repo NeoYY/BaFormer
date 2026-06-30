@@ -1,4 +1,4 @@
-from detectron2.utils.registry import Registry
+from action_segmentation.utils.d2_compat import Registry
 
 FRAME_DECODER_REGISTRY = Registry("FRAME_DECODER_MODULE")
 # FRAME_DECODER_REGISTRY.__doc__ = """

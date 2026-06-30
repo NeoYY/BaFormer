@@ -7,8 +7,8 @@ import copy
 import numpy as np
 import math
 
-from detectron2.config import configurable
-from detectron2.utils.registry import Registry
+from action_segmentation.utils.d2_compat import configurable
+from action_segmentation.utils.d2_compat import Registry
 
 from . import BACKBONE_REGISTRY
 

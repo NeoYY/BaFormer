@@ -6,7 +6,7 @@ from torch import optim
 import copy
 import numpy as np
 import math
-from detectron2.config import configurable
+from action_segmentation.utils.d2_compat import configurable
 
 from .frame_decoder import build_frame_decoder
 from .transformer_decoder import build_transformer_decoder

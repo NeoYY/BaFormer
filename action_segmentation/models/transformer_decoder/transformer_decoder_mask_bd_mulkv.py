@@ -7,9 +7,9 @@ import torch
 from torch import nn, Tensor
 from torch.nn import functional as F
 
-from detectron2.config import configurable
+from action_segmentation.utils.d2_compat import configurable
 from torch.nn import Conv1d
-from detectron2.utils.registry import Registry
+from action_segmentation.utils.d2_compat import Registry
 from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from timm.models.layers import DropPath, to_2tuple, trunc_normal_

@@ -73,7 +73,7 @@ def load_config():
     if not torch.cuda.is_available():
         config.device = 'cpu'
         config.train.dataloader.pin_memory = False
-    out_dir = os.path.join(config.train.output_dir, config.dataset.name, config.model.note,
+    out_dir = os.path.join(config.train.output_dir, config.dataset.name, config.model.name, config.model.note,
                            str(config.dataset.split))
 
     config_path = pathlib.Path(out_dir) / 'config.yaml'
@@ -334,6 +334,51 @@ def inference_bd_sharp(prediction):
 
 
 @torch.no_grad()
+def predicted_boundary_positions(mask_bd_logits, threshold):
+    """Class-agnostic boundary positions from the boundary head.
+
+    Mirrors the peak extraction used by ``inference_bd_peak``: apply sigmoid,
+    zero-out values below ``threshold``, then keep local maxima as the frames
+    where one action segment ends and the next begins (regardless of class).
+    Returns a sorted python list of frame indices.
+    """
+    mask_bd = mask_bd_logits.sigmoid().float().squeeze(dim=0)
+    mask_bd = mask_bd.clone()
+    mask_bd[mask_bd < threshold] = 0.0
+    peak = torch.where((mask_bd[:-2] < mask_bd[1:-1]) & (mask_bd[2:] < mask_bd[1:-1]))[0]
+    return (peak + 1).tolist()
+
+
+def boundary_detection_scores(pred_idx, gt_idx, tol):
+    """Greedy one-to-one matching of predicted vs GT boundaries within ``tol``.
+
+    Returns (tp, n_pred, n_gt). A predicted boundary counts as a true positive
+    if it is within ``tol`` frames of an as-yet-unmatched ground-truth boundary.
+    """
+    gt_used = [False] * len(gt_idx)
+    tp = 0
+    for p in pred_idx:
+        best_j, best_d = -1, tol + 1
+        for j, g in enumerate(gt_idx):
+            if gt_used[j]:
+                continue
+            d = abs(p - g)
+            if d <= tol and d < best_d:
+                best_d, best_j = d, j
+        if best_j >= 0:
+            gt_used[best_j] = True
+            tp += 1
+    return tp, len(pred_idx), len(gt_idx)
+
+
+def prf(tp, n_pred, n_gt):
+    precision = tp / n_pred if n_pred > 0 else 0.0
+    recall = tp / n_gt if n_gt > 0 else 0.0
+    f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) > 0 else 0.0
+    return precision, recall, f1
+
+
+@torch.no_grad()
 def validate(epoch, config, model,  val_loader, val_record, logger, tensorboard_writer):
     device = torch.device(config.device)
     meter_dict = Meter_dict()
@@ -344,6 +389,11 @@ def validate(epoch, config, model,  val_loader, val_record, logger, tensorboard_
     before_edit_meter = AverageMeter()
 
     model.eval()
+
+    # ---- class-agnostic boundary detection accumulators ----
+    bd_tols = [0, 1, 2, 4]
+    bd_micro = {t: [0, 0, 0] for t in bd_tols}  # tol -> [tp, n_pred, n_gt]
+    bd_macro_f1 = {t: [] for t in bd_tols}
 
     for step, (data, frame_target, fname) in enumerate(val_loader): # batchsize=1, one by one
         #----- data process
@@ -403,6 +453,16 @@ def validate(epoch, config, model,  val_loader, val_record, logger, tensorboard_
         #------compute metrics
         metric_results = meter_dict.get_update_metric(config.dataset.name, seg_pred, frame_target, loss, ins_seg_pred) #loss_meter and acc_meter
 
+        #------class-agnostic boundary detection metric
+        pred_bd = predicted_boundary_positions(outputs['pred_boundarys'][0], config.dataset.threshold)
+        gt_bd = torch.nonzero(targets[0]['boundarys']).squeeze(dim=-1).tolist()
+        for t in bd_tols:
+            tp, n_pred, n_gt = boundary_detection_scores(pred_bd, gt_bd, t)
+            bd_micro[t][0] += tp
+            bd_micro[t][1] += n_pred
+            bd_micro[t][2] += n_gt
+            bd_macro_f1[t].append(prf(tp, n_pred, n_gt)[2])
+
         if torch.cuda.is_available():
             torch.cuda.synchronize()
 
@@ -437,6 +497,19 @@ def validate(epoch, config, model,  val_loader, val_record, logger, tensorboard_
         f'edit_max {edit_avg: 4f} | '
         )
 
+    #------report class-agnostic boundary detection metrics
+    logger.info('---------- Class-Agnostic Boundary Detection ----------')
+    for t in bd_tols:
+        tp, n_pred, n_gt = bd_micro[t]
+        p, r, f1 = prf(tp, n_pred, n_gt)
+        macro = sum(bd_macro_f1[t]) / len(bd_macro_f1[t]) if bd_macro_f1[t] else 0.0
+        logger.info(
+            f'tol={t:>2} frame(s) | '
+            f'P {p*100:6.2f} | R {r*100:6.2f} | '
+            f'micro-F1 {f1*100:6.2f} | macro-F1 {macro*100:6.2f} | '
+            f'(tp={tp}, pred={n_pred}, gt={n_gt})'
+        )
+
     return if_update
 
 def main():
@@ -448,7 +521,7 @@ def main():
 
     epoch_seeds = np.random.randint(np.iinfo(np.int32).max // 2,
                                     size=config.scheduler.epochs)
-    out_dir = os.path.join(config.train.output_dir, config.dataset.name, config.model.note, str(config.dataset.split))
+    out_dir = os.path.join(config.train.output_dir, config.dataset.name, config.model.name, config.model.note, str(config.dataset.split))
     output_dir = pathlib.Path(out_dir)
 
     logger = create_logger(name=__name__,

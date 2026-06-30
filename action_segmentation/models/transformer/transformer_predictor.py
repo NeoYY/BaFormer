@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from detectron2.config import configurable
+from action_segmentation.utils.d2_compat import configurable
 # from detectron2.layers import Conv2d
 from torch.nn import Conv1d
 

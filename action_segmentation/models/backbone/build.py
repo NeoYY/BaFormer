@@ -1,4 +1,4 @@
-from detectron2.utils.registry import Registry
+from action_segmentation.utils.d2_compat import Registry
 
 
 BACKBONE_REGISTRY = Registry("BACKBONE")

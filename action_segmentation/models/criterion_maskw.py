@@ -3,9 +3,9 @@ import torch.nn.functional as F
 from torch import nn
 
 import torch.distributed as dist
-from detectron2.utils.comm import get_world_size
+from action_segmentation.utils.dist import get_world_size
 
-# from detectron2.config import configurable
+# from action_segmentation.utils.d2_compat import configurable
 from ..config import configurable
 
 """

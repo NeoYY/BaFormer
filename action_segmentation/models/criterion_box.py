@@ -3,9 +3,9 @@ import torch.nn.functional as F
 from torch import nn
 
 import torch.distributed as dist
-from detectron2.utils.comm import get_world_size
+from action_segmentation.utils.dist import get_world_size
 
-# from detectron2.config import configurable
+# from action_segmentation.utils.d2_compat import configurable
 from ..config import configurable
 
 """
@@ -389,5 +389,4 @@ class HungarianMatcher(nn.Module):
         # indices = [(list(range(sizes[i])), list(range(sizes[i]))) for i, c in enumerate(C.split(sizes, -1))]
 
         return [(torch.as_tensor(i, dtype=torch.int64), torch.as_tensor(j, dtype=torch.int64)) for i, j in indices]
-
 

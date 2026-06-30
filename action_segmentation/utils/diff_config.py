@@ -2,7 +2,7 @@ from typing import Optional
 
 import yacs.config
 
-from action_segmentation import get_default_config
+from action_segmentation.config import get_default_config
 from action_segmentation.config.config_node import ConfigNode
 
 
