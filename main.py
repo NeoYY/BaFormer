@@ -392,7 +392,19 @@ def train(epoch, config, model, optimizer, scheduler, train_loader, logger, tens
         loss = losses
         # print(loss_dict)
 
+        # NVIDIA-specific stabilization (MI210 trains stably without this; on
+        # Ampere the loss can spike on long videos and poison the weights,
+        # collapsing val to the class prior and later NaN-ing the Hungarian
+        # matcher). Skip non-finite batches and clip grads per config.train.clip_grad.
+        if not torch.isfinite(loss):
+            logger.warning(f'Non-finite loss ({loss.item()}) at epoch {epoch} step {idx_sample}; skipping update')
+            optimizer.zero_grad(set_to_none=True)
+            continue
+
         loss.backward()
+        clip_grad = getattr(config.train, 'clip_grad', 0.0)
+        if clip_grad and clip_grad > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip_grad)
         optimizer.step()
 
         # ------inference
