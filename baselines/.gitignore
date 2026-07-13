@@ -1,0 +1,11 @@
+repos/
+weights/
+predictions/
+asrf_dataset/
+c2f_base/
+
+results/*.log
+results/asrf_finalize.log
+results/asrf_train_s1.log
+
+common/__pycache__/
