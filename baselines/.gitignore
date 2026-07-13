@@ -1,4 +1,3 @@
-repos/
 weights/
 predictions/
 asrf_dataset/
@@ -9,3 +8,10 @@ results/asrf_finalize.log
 results/asrf_train_s1.log
 
 common/__pycache__/
+repos/**/__pycache__/
+repos/**/.git/
+repos/ASFormer/data
+repos/DiffAct/datasets
+repos/MS-TCN2/
+repos/DiffAct/datasets/
+repos/DiffAct/trained_models/
